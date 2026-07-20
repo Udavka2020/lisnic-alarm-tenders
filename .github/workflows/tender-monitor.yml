@@ -1,0 +1,56 @@
+name: Tender Monitor
+
+on:
+  schedule:
+    - cron: '0 5,11 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      cpv:
+        description: 'CPV codes comma separated'
+        required: false
+        type: string
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch tenders
+        id: fetch
+        run: |
+          python3 scripts/fetch_tenders.py ${{ github.event.inputs.cpv || '' }} > /tmp/tenders.json 2>/tmp/fetch.log
+          cat /tmp/fetch.log
+          echo "count=$(python3 -c 'import json; print(len(json.load(open("/tmp/tenders.json"))))')" >> $GITHUB_OUTPUT
+
+      - name: Save report
+        run: |
+          mkdir -p reports
+          ts=$(date +%Y%m%d_%H%M)
+          cp /tmp/tenders.json "reports/tenders_${ts}.json"
+          ls -t reports/tenders_*.json | tail -n +31 | xargs -r rm
+
+      - name: Create issue if tenders found
+        if: steps.fetch.outputs.count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -c "
+import json
+with open('/tmp/tenders.json') as f:
+    data = json.load(f)
+lines = [f'# Tender Monitor - {len(data)} finds\n']
+for r in data:
+    lines.append(f'## [{r['cpv']}] {r['title']}')
+    lines.append(f'- Category: {r['category']}')
+    lines.append(f'- URL: {r['url']}')
+    if r.get('deadline'):
+        lines.append(f'- Deadline: {r['deadline']}')
+    lines.append('')
+body = '\n'.join(lines)
+print(body)
+" > /tmp/issue_body.md
+          gh issue create --title "Tender Monitor $(date +%d.%m.%Y)" --label tenders --body-file /tmp/issue_body.md --repo ${{ github.repository }}
